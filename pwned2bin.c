@@ -13,7 +13,7 @@
 struct {
     unsigned char sha[20];
     uint32_t count;
-} line = {0};
+} line = { "", 0 };
 
 int hex_val(char c) {
     if (('0' <= c) && (c <= '9'))
