@@ -229,3 +229,16 @@ char* sha1_buffer_flags(const void* restrict data, size_t size, char* restrict t
     return sha1_text(sha1_end(sha1_update(sha1_init_flags(&sha1, flags), data, size)), text);
 }   /* sha1_buffer_flags() */
 
+/* ------------------------------------------------------------------------- */
+uint8_t* sha1_buffer_bin(const void* restrict data, size_t size, uint8_t* restrict bin) {
+    sha1_t sha1;
+    size_t w = 0;
+    sha1_end(sha1_update(sha1_init(&sha1), data, size));
+    for (w = 0; w < SHA1_BINARY_WORDS; w++) {
+        bin[4*w + 0] = sha1.h[w] >> 24;
+        bin[4*w + 1] = sha1.h[w] >> 16;
+        bin[4*w + 2] = sha1.h[w] >>  8;
+        bin[4*w + 3] = sha1.h[w] >>  0;
+    }
+    return bin;
+}   /* sha1_buffer_bin() */

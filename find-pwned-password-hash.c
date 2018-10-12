@@ -3,22 +3,41 @@
 /* $Id$ */
 
 /**
+ * find-pwned-password-hash Look up password hash in mambo list of them.
+ *
  * This program searches for a given SHA1 hash in a sorted file of hashes and
- * occurrence counts. The input file is expected to have records that are
- * fully ASCII and are 63 bytes per record. This is the format used by
- * "pwned-passwords-sorted-2.0.txt" at https://haveibeenpwned.com/Passwords.
+ * occurrence counts. The input file is expected to have binary records that
+ * are 24 bytes long. The first 20 bytes are the SHA1 hash of the password
+ * and the next 4 bytes are a 32-bit little-endian occurrence count for the
+ * corresponding password.
  *
- * The program allows specification of the hashes to search either on the
- * command line or from stdin.
+ * A set of text hashes is provided by https://haveibeenpwned.com/Passwords.
+ * The last two major versions (2.0 and 3.0) provide those passwords in text
+ * files wrapped inside a 7z wrapper. Version 2.0 provided fixed-length
+ * space-padded lines (63 bytes!) while version 3.0 provides variable-length
+ * lines. To extract either of those into a binary, first build `pwned2bin`
+ * in this directory (use `make`) then use:
  *
- * The program will also accept passwords as input, in which case it will
- * perform a SHA1 hash of each password then search for the resulting
+ * $ 7z x -so pwned-passwords-ordered-by-hash.7z \
+ *       pwned-passwords-ordered-by-hash.txt | ./pwned2bin \
+ *       > pwned-passwords-ordered-by-hash.bin
+ *
+ * This may take a few minutes. It may take a LOT of minutes!
+ *
+ * The program accepts SHA1 password *hashes* on the command line or via
+ * stdin.
+ *
+ * The program will also accept passwords as input (-p), in which case it
+ * will perform a SHA1 hash of each password then search for the resulting
  * hash. If stdin is a tty then the program will disable echoing from stdin
  * unless explicitly told not to with -no-secure.
+ *
+ * Use '-h' to see the options available.
  */
 
 #include <assert.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -38,25 +57,19 @@
 #define kProgram "find-pwned-password-hash"
 
 /**
- * Name of this program; this may be modified by argv[0] in main().
+ * Discrete version information.
  */
-const char* g_program = kProgram;
+#define VERSION_MAJOR 3
+#define VERSION_MINOR 0
+#define VERSION_PATCH 0
+
+#define STRING_VALUE(x) #x
+#define EXPAND_VALUE(a) STRING_VALUE(a)
 
 /**
- * Name of the text hash file. The file should be sorted by hash
+ * Version information as a string.
  */
-#define kDefaultTextHashFile "pwned-passwords-ordered-2.0.txt"
-
-/**
- * File of sorted 63-byte lines of the format '<hash>:<count>' - like those
- * found in "pwned-passwords-ordered-2.0.txt".
- */
-const char* g_text_hash_file = kDefaultTextHashFile;
-
-/**
- * Size in bytes of each line of kTextHashFile.
- */
-#define kTextHashLineBytes 63
+#define VERSION_TEXT (EXPAND_VALUE(VERSION_MAJOR) "."EXPAND_VALUE(VERSION_MINOR) "."EXPAND_VALUE(VERSION_PATCH))
 
 /**
  * Size of binary SHA1 hash in bytes.
@@ -64,9 +77,45 @@ const char* g_text_hash_file = kDefaultTextHashFile;
 #define kBinHashBytes SHA1_BINARY_BYTES
 
 /**
- * Size of ASCII SHA1 hash (text) in bytes.
+ * Size of text SHA1 hash in bytes, not including a terminating NUL.
  */
-#define kTextHashChars (2 * kBinHashBytes)
+#define kTextHashChars (2 * SHA1_BINARY_BYTES)
+
+/**
+ * An individual binary record consists of the SHA1 hash of a password
+ * followed by an occurrence count.
+ */
+struct pwned_info_s {
+    uint8_t hash[SHA1_BINARY_BYTES];    /**< SHA1 hash of password. */
+    uint32_t count;                     /**< Number of times password was found in breaches. */
+} __attribute__((packed));
+
+typedef struct pwned_info_s pwned_info_t;
+
+/**
+ * Handy 64-bit size of the struct.
+ */
+const uint64_t kPwnedInfoSize = sizeof(pwned_info_t);
+
+/**
+ * Name of this program; this may be modified by argv[0] in main().
+ */
+const char* g_program = kProgram;
+
+/**
+ * Name of the text hash file. The file should be sorted by hash
+ */
+#define kDefaultHashFile "pwned-passwords-ordered-by-hash.bin"
+
+/**
+ * File of binary hashes and counts.
+ */
+const char* g_hash_file = kDefaultHashFile;
+
+/**
+ * Number of items so far processed.
+ */
+uint64_t g_count = 0;
 
 /**
  * Whether or not to emit verbose messages.
@@ -75,10 +124,34 @@ const char* g_text_hash_file = kDefaultTextHashFile;
 int g_verbose = kDefaultVerbose;
 
 /**
+ * Whether or not to suppress normal output.
+ */
+#define kDefaultQuiet 0
+int g_quiet = kDefaultQuiet;
+
+/**
+ * Whether or not to print the index - the item number.
+ */
+#define kDefaultPrintIndex 0
+int g_print_index = kDefaultPrintIndex;
+
+/**
+ * Whether or not to print the password when using '-p'.
+ */
+#define kDefaultPrintPassword 0
+int g_print_password = kDefaultPrintPassword;
+
+/**
  * Whether or not to print '<hash>:<count>' rather than '<count>'.
  */
 #define kDefaultPrintHash 0
 int g_print_hash = kDefaultPrintHash;
+
+/**
+ * Whether or not to print the occurrence count.
+ */
+#define kDefaultPrintCount 1
+int g_print_count = kDefaultPrintCount;
 
 /**
  * Whether or not to treat input items as passwords that should first be
@@ -93,6 +166,24 @@ int g_password = kDefaultPassword;
  */
 #define kDefaultSecure 1
 int g_secure = kDefaultSecure;
+
+/**
+ * Whether or not to print items found in the database.
+ */
+#define kDefaultPrintFound 1
+int g_print_found = kDefaultPrintFound;
+
+/**
+ * Whether or not to print items *not* found in the database.
+ */
+#define kDefaultPrintNotFound 1
+int g_print_not_found = kDefaultPrintNotFound;
+
+/**
+ * Delimiter to use for fields when printing to output.
+ */
+#define kDefaultDelimiter ":"
+const char* g_delimiter = kDefaultDelimiter;
 
 /* ------------------------------------------------------------------------- */
 /**
@@ -114,10 +205,14 @@ void Usage(FILE* file, int exit_code) {
     fprintf(file,
             "\n"
             "DESCRIPTION\n"
-            "    %s finds the hash given on the command line (or stdin if no\n"
-            "    command line arguments are given) in '%s'.\n"
+            "    %s finds the hash given on the command line (or stdin if\n"
+            "    no command line arguments are given) in '%s'.\n"
             "\n"
-            , g_program, kDefaultTextHashFile);
+            "    %s exits with 0 (success) if the hash or password is found. If\n"
+            "    any of the hashes or passwords is not found, 1 is set as the exit code.\n"
+            "    Errors will use an exit code that is neither 0 nor 1.\n"
+            "\n"
+            , g_program, kDefaultHashFile, g_program);
     fprintf(file,
             "    %s will print the count of passwords that were found with\n"
             "    that hash. If the hash is not found, 0 is printed and an error status code\n"
@@ -137,6 +232,28 @@ void Usage(FILE* file, int exit_code) {
             , g_program, g_program, g_program);
     fprintf(file,
             "\n"
+            "CREATING HASH FILE\n"
+            "    %s was developed to use the hash files graciously provided\n"
+            "    by Troy at:\n"
+            "\n"
+            "        https://haveibeenpwned.com/Passwords\n"
+            "\n"
+            "    Thanks, Troy! The pwned-password files there are text files with one hash\n"
+            "    per line. Version 2.0 had fixed-length lines which allowed them to be\n"
+            "    mapped and searched easily. Version 3.0, though, has variable-length lines\n"
+            "    which save a lot of space but make mapping less amenable to binary search.\n"
+            "\n"
+            "    So as of version 3.0 this program no longer accepts the native text file\n"
+            "    but requires that you convert the text file to binary. Here's an example\n"
+            "    of how to do that:\n"
+            "\n"
+            "       $ 7z x -so pwned-passwords-ordered-by-hash.7z \\\n"
+            "           pwned-passwords-ordered-by-hash.txt | ./pwned2bin \\\n"
+            "            > pwned-passwords-ordered-by-hash.bin\n"
+            "\n"
+            , g_program);
+    fprintf(file,
+            "\n"
             "OPTIONS\n"
             "    Options may begin with '-' or '--'. A ':' indicates where options may be\n"
             "    abbreviated\n");
@@ -145,28 +262,53 @@ void Usage(FILE* file, int exit_code) {
             "    -h:elp                      Show this usage information.\n");
     fprintf(file,
             "\n"
-            "    -f:ile=filename             Name of text hash file. [%s]\n"
-            , kDefaultTextHashFile);
+            "    -q:uiet                     Quiet - suppress normal output.\n");
+    fprintf(file,
+           "\n"
+            "    -f:ile=filename             Name of binary hash file that should be sorted\n"
+            "                                by hash. [%s]\n"
+            , kDefaultHashFile);
     fprintf(file,
             "    -[no-]p:assword             Inputs are passwords that must be hashed. [%s-password]\n"
             , kDefaultPassword ? "" : "-no");
     fprintf(file,
-            "    -[no-]e:cho:-hash           Print '<hash>:<count>' instead of just <count>. [%s-echo-hash]\n"
+            "    -d:elim:iter=STRING         Delimiter to use for output fields. [%s]\n"
+            , kDefaultDelimiter);
+    fprintf(file,
+            "    -[no-]pi                    Print index in result. [%s-pi]\n"
+            , kDefaultPrintIndex ? "" : "-no");
+    fprintf(file,
+            "    -[no-]pp                    Print password in result when using '-p'. [%s-pp]\n"
+            , kDefaultPrintPassword ? "" : "-no");
+    fprintf(file,
+            "    -[no-]e:cho:-hash, -ph      Print hash in result. [%s-echo-hash]\n"
             , kDefaultPrintHash ? "" : "-no");
+    fprintf(file,
+            "    -[no-]pc                    Print occurrence count in result'. [%s-pc]\n"
+            , kDefaultPrintCount ? "" : "-no");
     fprintf(file,
             "    -[no-]s:ecure               Inhibit echo of password in interactive shell. [%s-secure]\n"
             , kDefaultSecure ? "" : "-no");
-    /* fprintf(file, */
-    /*         "    -[no-]v:erbose              Print verbose (debug) messages. [%s-verbose]\n" */
-    /*         , kDefaultVerbose ? "" : "-no"); */
+    fprintf(file,
+            "    -[no-]pf                    Print values that appear in database. [%s-pf]\n"
+            , kDefaultPrintFound ? "" : "-no");
+    fprintf(file,
+            "    -[no-]pnf                   Print values that do *not* appear in database. [%s-pnf]\n"
+            , kDefaultPrintNotFound ? "" : "-no");
+    fprintf(file,
+            "    -[no-]v:erbose              Print verbose (debug) messages. [%s-verbose]\n"
+            , kDefaultVerbose ? "" : "-no");
+    fprintf(file,
+            "    -V, --version               Print version and copyright then exit.\n");
     exit(exit_code);
 }   /* Usage() */
 
 /* ------------------------------------------------------------------------- */
 /**
- * Print an error message to stderr then exit the program with exit code 1.
+ * Print an error message to stderr then exit the program with @p exit_code
+ * if @p exit_code is non-zero.
  */
-void PrintUsageError(const char* format, ...) {
+void PrintUsageError(int exit_code, const char* format, ...) {
     char text[0x0100] = "";
     va_list va;
     va_start(va, format);
@@ -174,8 +316,38 @@ void PrintUsageError(const char* format, ...) {
     va_end(va);
     fprintf(stderr, "%s: %s\n", g_program, text);
     fprintf(stderr, "%s: Use '%s --help' for usage information.\n", g_program, g_program);
-    exit(1);
+    if (exit_code) {
+        exit(exit_code);
+    }
 }   /* PrintUsageError() */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Print an error message to stderr.
+ */
+void PrintError(const char* format, ...) {
+    char text[0x0100] = "";
+    va_list va;
+    va_start(va, format);
+    vsnprintf(text, sizeof(text), format, va);
+    va_end(va);
+    fprintf(stderr, "%s: %s\n", g_program, text);
+}   /* PrintError() */
+
+/* ------------------------------------------------------------------------- */
+/**
+ * Print a verbose (debug) message to stderr if g_verbose is non-zero.
+ */
+void PrintVerbose(const char* format, ...) {
+    if (g_verbose) {
+        char text[0x0100] = "";
+        va_list va;
+        va_start(va, format);
+        vsnprintf(text, sizeof(text), format, va);
+        va_end(va);
+        fprintf(stderr, "%s: %s\n", g_program, text);
+    }
+}   /* PrintVerbose() */
 
 /* ------------------------------------------------------------------------- */
 /**
@@ -315,18 +487,33 @@ int ParseOptions(int argc, char* argv[]) {
             end_of_options = 1;
         } else if (IsOption(arg, NULL, "h:elp")) {
             Usage(stdout, 0);
+        } else if (IsFlagOption(arg, &g_quiet, "q:uiet")) {
+        } else if (IsOption(arg, &opt, "d:elim:iter")) {
+            if (NULL == opt) {
+                PrintUsageError(2, "--delimiter option requires argument");
+            }
+            g_delimiter = opt;
         } else if (IsFlagOption(arg, &g_password, "p:assword")) {
+        } else if (IsFlagOption(arg, &g_print_index, "pi")) {
+        } else if (IsFlagOption(arg, &g_print_password, "pp")) {
         } else if (IsFlagOption(arg, &g_print_hash, "e:cho:-hash")) {
+        } else if (IsFlagOption(arg, &g_print_hash, "ph")) {
+        } else if (IsFlagOption(arg, &g_print_count, "pc")) {
         } else if (IsOption(arg, &opt, "f:ile")) {
             if (NULL == opt) {
-                fprintf(stderr, "%s: --file option requires argument\n", g_program);
-                exit(2);
+                PrintUsageError(2, "--file option requires argument");
             }
-            g_text_hash_file = opt;
+            g_hash_file = opt;
         } else if (IsFlagOption(arg, &g_secure, "s:ecure")) {
-        /* } else if (IsFlagOption(arg, &g_verbose, "v:erbose")) { */
+        } else if (IsFlagOption(arg, &g_print_found, "pf")) {
+        } else if (IsFlagOption(arg, &g_print_not_found, "pnf")) {
+        } else if (IsFlagOption(arg, &g_verbose, "v:erbose")) {
+        } else if (IsOption(arg, NULL, "V") || IsOption(arg, NULL, "version")) {
+            fprintf(stdout, "%s: v%s\n", g_program, VERSION_TEXT);
+            fprintf(stdout, "Copyright (c) Doug Rogers under the MIT License.\n");
+            exit(0);
         } else {
-            PrintUsageError("invalid option \"%s\"", arg);
+            PrintUsageError(2, "invalid option \"%s\"", arg);
         }
     }
     return rval;
@@ -353,26 +540,16 @@ int ParseOptions(int argc, char* argv[]) {
  *
  * @return 1 if the hash was found, 0 otherwise.
  */
-int find_hash(const char* data, off_t file_size, const char* hash, uint64_t* count) {
+int find_hash(const pwned_info_t* data, off_t file_size, const uint8_t* hash, uint64_t* count) {
     off_t lo = 0;
-    off_t hi = (file_size / kTextHashLineBytes) - 1;
+    off_t hi = (file_size / kPwnedInfoSize) - 1;
     off_t mid = (lo + hi) / 2;
-    int hash_len = strlen(hash);
-    if (hash_len != kTextHashChars) {
-        fprintf(stderr, "%s: hash '%s' should be %u bytes long, not %u\n", g_program, hash, kTextHashChars, hash_len);
-        return 0;
-    }
 
     while (1) {
-        const char* file_hash = &data[mid * kTextHashLineBytes];
-        char _file_hash[kTextHashChars+1] = {0};
-        strncpy(_file_hash, file_hash, sizeof(_file_hash));
-        _file_hash[kTextHashChars] = 0;
-        int cmp = strncasecmp(hash, file_hash, kTextHashChars);
-        /* printf("hash=%s file=%s lo=%-11llu mid=%-11llu hi=%-11llu  cmp=%d\n", */
-        /*        hash, _file_hash, (long long) lo, (long long) mid, (long long) hi, cmp); */
+        const pwned_info_t* pwned = &data[mid];
+        int cmp = memcmp(hash, pwned->hash, SHA1_BINARY_BYTES);
         if (0 == cmp) {
-            *count = atoi(&file_hash[kTextHashChars + 1]);  /* skip hash and colon */
+            *count = pwned->count;
             return 1;
         }
         if (lo == mid) {
@@ -390,25 +567,79 @@ int find_hash(const char* data, off_t file_size, const char* hash, uint64_t* cou
 }   /* find_hash() */
 
 /* ------------------------------------------------------------------------- */
+static inline int hexval(char c) {
+    if (('0' <= c) && (c <= '9')) return c - '0';
+    if (('A' <= c) && (c <= 'F')) return 10 + c - 'A';
+    if (('a' <= c) && (c <= 'f')) return 10 + c - 'a';
+    return -1;
+}   /* hexval() */
+
+/* ------------------------------------------------------------------------- */
+static int hex2byte(const char* h, uint8_t* byte) {
+    assert(NULL != byte);
+    int hi = hexval(h[0]);
+    int lo = hexval(h[1]);
+    if ((hi < 0) || (lo < 0)) {
+        return 0;
+    }
+    *byte = (hi * 16) + lo;
+    return 1;
+}   /* hex2byte() */
+
+/* ------------------------------------------------------------------------- */
 int handle_input(const char* input, const char* file_data, uint64_t file_size) {
     int found = 1;
     uint64_t count = 0 ;
-    char hash[SHA1_TEXT_BYTES] = {0};
+    uint8_t hash[SHA1_BINARY_BYTES] = {0};
+    g_count++;
     if (g_password) {
-        sha1_buffer_flags(input, strlen(input), hash, SHA1_FLAG_UPPER_CASE);
+        sha1_buffer_bin(input, strlen(input), hash);
     } else if (strlen(input) != kTextHashChars) {
-        fprintf(stderr, "%s: invalid SHA1 hash '%s' should have length %u but has length %u.\n",
-                g_program, input, kTextHashChars, (unsigned int) strlen(input));
+        PrintUsageError(0, "invalid SHA1 hash '%s' should have length %u but has length %u.",
+                        input, kTextHashChars, (unsigned int) strlen(input));
         return 0;
     } else {
-        memcpy(hash, input, sizeof(hash) - 1);
+        for (int i = 0; i < SHA1_BINARY_BYTES; ++i) {
+            if (!hex2byte(&input[2*i], &hash[i])) {
+                PrintUsageError(0, "invalid 2-digit hex byte at index %d of hash '%s'", 2*i, input);
+                return 0;
+            }
+        }
     }
-    found = find_hash(file_data, file_size, hash, &count);
-    if (g_print_hash) {
-        printf("%s:%llu\n", hash, (unsigned long long) count);
-    } else {
-        printf("%llu\n", (unsigned long long) count);
+    found = find_hash((const pwned_info_t*) file_data, file_size, hash, &count);
+    if (!g_quiet) {
+        const char* delim = "";
+        if ((found && g_print_found) ||
+            (!found && g_print_not_found)) {
+            if (g_print_index) {
+                printf("%s%" PRIu64, delim, g_count);
+                delim = g_delimiter;
+            }
+            if (g_print_password && g_password) {
+                printf("%s%" PRIu64, delim, g_count);
+                delim = g_delimiter;
+            }
+            if (g_print_password && g_password) {
+                printf("%s%s", delim, input);
+                delim = g_delimiter;
+            }
+            if (g_print_hash) {
+                printf("%s", delim);
+                for (int i = 0; i < SHA1_BINARY_BYTES; ++i) {
+                    printf("%02X", hash[i]);
+                }
+                delim = g_delimiter;
+            }
+            if (g_print_count) {
+                printf("%s%" PRIu64, delim, count);
+                delim = g_delimiter;
+            }
+            if (delim == g_delimiter) {
+                printf("\n");
+            }
+        }
     }
+    return found;
 }   /* handle_input() */
 
 /* ------------------------------------------------------------------------- */
@@ -419,7 +650,7 @@ int handle_input(const char* input, const char* file_data, uint64_t file_size) {
  * enable echoing of character on stdin.
  */
 void echo_on_stdin(int enable) {
-    fprintf(stdout, "%s: %sabling echo of input\n", g_program, enable ? "en" : "dis");
+    PrintVerbose("%sabling echo of input", enable ? "en" : "dis");
     struct termios tty;
     tcgetattr(STDIN_FILENO, &tty);
     if (enable) {
@@ -442,26 +673,30 @@ void echo_on_stdin(int enable) {
  */
 int main(int argc, char* argv[]) {
     g_program = NamePartOfPath(argv[0]);
+    assert(sizeof(pwned_info_t) == 24);
     argc = ParseOptions(argc, argv);  /* Remove options; leave program name and arguments. */
-    int fd = open(g_text_hash_file, O_RDONLY);
+    int fd = open(g_hash_file, O_RDONLY);
     if (fd < 0) {
-        fprintf(stderr, "%s: could not open '%s'\n", g_program, g_text_hash_file);
-        return 2;
+        PrintUsageError(2, "could not open \"%s\"", g_hash_file);
     }
     loff_t file_size =  lseek(fd, 0, SEEK_END);
     if (file_size < 0) {
-        fprintf(stderr, "%s: _llseek() failed\n", g_program);
+        PrintError("_llseek() failed");
         return 3;
     }
-    if ((0 == file_size) || (0 != (file_size % kTextHashLineBytes))) {
-        fprintf(stderr, "%s: invalid file size %llu; should be > 0 and divisible by %u.\n",
-                g_program, (long long) file_size, kTextHashLineBytes);
+    if ((0 == file_size) || (0 != (file_size % kPwnedInfoSize))) {
+        PrintUsageError(3, "invalid file size %" PRIu64 "; should be > 0 and divisible by %" PRIu64 ".",
+                        file_size, kPwnedInfoSize);
         return 4;
     }
     lseek(fd, 0, SEEK_SET);
+    uint64_t hashes = file_size / kPwnedInfoSize;
+    PrintVerbose("file \"%s\" size=%" PRIu64 " bytes, %" PRIu64 " hash%s.",
+                 g_hash_file, file_size, hashes, (1 == hashes) ? "" : "es");
+
     const char* file_data = (const char*) mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     if (NULL == file_data) {
-        fprintf(stderr, "%s: mmap() failed\n", g_program);
+        PrintError("mmap() failed");
         return 5;
     }
     int not_found = 0;
@@ -475,9 +710,8 @@ int main(int argc, char* argv[]) {
         if (g_password && g_secure && isatty(STDIN_FILENO)) {
             echo_on_stdin(0);
         }
-        char* line = NULL;
-        size_t alloc_n = 0;
-        while (getline(&line, &alloc_n, stdin) >= 0) {
+        char line[0x100] = "";
+        while (NULL != fgets(line, sizeof(line), stdin)) {
             size_t n = strlen(line);
             while ((n > 0) && ('\n' == line[n-1])) {
                 line[--n] = 0;
@@ -485,14 +719,11 @@ int main(int argc, char* argv[]) {
             if (!handle_input(line, file_data, file_size)) {
                 not_found = 1;
             }
-            free(line);
-            line = NULL;
-            alloc_n = 0;
         }
         if (g_password && g_secure && isatty(STDIN_FILENO)) {
             echo_on_stdin(1);
         }
     }
     munmap((void*) file_data, file_size);
-    return 0;
+    return not_found ? 1 : 0;
 }   /* main() */

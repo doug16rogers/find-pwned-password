@@ -1,6 +1,9 @@
 Haveibeenpwned Database Lookup
 ==============================
 
+Old Notes
+=========
+
 Here are some notes about the haveibeenpwned.com password hash database,
 version 2.0.
 

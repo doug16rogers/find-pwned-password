@@ -51,6 +51,7 @@ sha1_t* sha1_end(sha1_t* sha1);
 char*  sha1_text(const sha1_t* restrict sha1, char* restrict text);
 char*  sha1_buffer(const void* restrict data, size_t size, char* restrict text);
 char*  sha1_buffer_flags(const void* restrict data, size_t size, char* restrict text, uint32_t flags);
+uint8_t* sha1_buffer_bin(const void* restrict data, size_t size, uint8_t* restrict bin);
 
 #ifdef __cplusplus
 }

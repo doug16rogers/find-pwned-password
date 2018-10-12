@@ -8,8 +8,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdint.h>
-
-extern int write(int fd, const void* buf, int len);
+#include <unistd.h>
 
 struct {
     unsigned char sha[20];
