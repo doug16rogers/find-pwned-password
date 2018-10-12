@@ -33,6 +33,5 @@ x64
 .DS_Store
 
 # Local targets:
-find-pwned-password-hash
+find-pwned
 pwned2bin
-

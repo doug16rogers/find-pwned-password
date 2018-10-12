@@ -261,7 +261,8 @@ void Usage(FILE* file, int exit_code) {
             "\n"
             "    -h:elp                      Show this usage information.\n");
     fprintf(file,
-            "\n"
+            "    -V, -version                Print version and copyright then exit.\n");
+    fprintf(file,
             "    -q:uiet                     Quiet - suppress normal output.\n");
     fprintf(file,
            "\n"
@@ -281,7 +282,7 @@ void Usage(FILE* file, int exit_code) {
             "    -[no-]pp                    Print password in result when using '-p'. [%s-pp]\n"
             , kDefaultPrintPassword ? "" : "-no");
     fprintf(file,
-            "    -[no-]e:cho:-hash, -ph      Print hash in result. [%s-echo-hash]\n"
+            "    -[no-]ph                    Print hash in result. [%s-ph]\n"
             , kDefaultPrintHash ? "" : "-no");
     fprintf(file,
             "    -[no-]pc                    Print occurrence count in result'. [%s-pc]\n"
@@ -298,8 +299,6 @@ void Usage(FILE* file, int exit_code) {
     fprintf(file,
             "    -[no-]v:erbose              Print verbose (debug) messages. [%s-verbose]\n"
             , kDefaultVerbose ? "" : "-no");
-    fprintf(file,
-            "    -V, --version               Print version and copyright then exit.\n");
     exit(exit_code);
 }   /* Usage() */
 
@@ -496,7 +495,6 @@ int ParseOptions(int argc, char* argv[]) {
         } else if (IsFlagOption(arg, &g_password, "p:assword")) {
         } else if (IsFlagOption(arg, &g_print_index, "pi")) {
         } else if (IsFlagOption(arg, &g_print_password, "pp")) {
-        } else if (IsFlagOption(arg, &g_print_hash, "e:cho:-hash")) {
         } else if (IsFlagOption(arg, &g_print_hash, "ph")) {
         } else if (IsFlagOption(arg, &g_print_count, "pc")) {
         } else if (IsOption(arg, &opt, "f:ile")) {
@@ -612,10 +610,6 @@ int handle_input(const char* input, const char* file_data, uint64_t file_size) {
         if ((found && g_print_found) ||
             (!found && g_print_not_found)) {
             if (g_print_index) {
-                printf("%s%" PRIu64, delim, g_count);
-                delim = g_delimiter;
-            }
-            if (g_print_password && g_password) {
                 printf("%s%" PRIu64, delim, g_count);
                 delim = g_delimiter;
             }

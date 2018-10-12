@@ -1,4 +1,4 @@
-TARGETS = pwned2bin find-pwned-password-hash
+TARGETS = pwned2bin find-pwned
 
 CC = gcc
 CFLAGS = -Wall -Werror -std=c99
@@ -11,7 +11,7 @@ all: $(TARGETS)
 pwned2bin: pwned2bin.o
 	gcc -o $@ $^
 
-find-pwned-password-hash: find-pwned-password-hash.o sha1.o
+find-pwned: find-pwned.o sha1.o
 	gcc -o $@ $^
 
 .PHONY: clean
