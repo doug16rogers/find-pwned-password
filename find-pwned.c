@@ -673,7 +673,7 @@ int main(int argc, char* argv[]) {
     if (fd < 0) {
         PrintUsageError(2, "could not open \"%s\"", g_hash_file);
     }
-    loff_t file_size =  lseek(fd, 0, SEEK_END);
+    off_t file_size =  lseek(fd, 0, SEEK_END);
     if (file_size < 0) {
         PrintError("_llseek() failed");
         return 3;
