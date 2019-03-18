@@ -1,4 +1,5 @@
-/* This software is in the public domain. */
+/* (c) 2018 Doug Rogers under Zero Clause BSD License. See LICENSE.txt. */
+/* You are free to do whatever you want with this software. Have at it! */
 
 /*
  * Read lines in pwned-password format from stdin and write them in binary to

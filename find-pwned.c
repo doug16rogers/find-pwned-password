@@ -1,6 +1,5 @@
-/* Copyright (c) 2018 Doug Rogers under the terms of the MIT License. */
-/* See http://www.opensource.org/licenses/mit-license.html.. */
-/* $Id$ */
+/* (c) 2018 Doug Rogers under Zero Clause BSD License. See LICENSE.txt. */
+/* You are free to do whatever you want with this software. Have at it! */
 
 /**
  * find-pwned-password-hash Look up password hash in mambo list of them.
@@ -49,6 +48,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "bsd_0_clause_license.h"
 #include "sha1.h"
 
 /**
@@ -61,7 +61,7 @@
  */
 #define VERSION_MAJOR 3
 #define VERSION_MINOR 0
-#define VERSION_PATCH 0
+#define VERSION_PATCH 1
 
 #define STRING_VALUE(x) #x
 #define EXPAND_VALUE(a) STRING_VALUE(a)
@@ -508,7 +508,7 @@ int ParseOptions(int argc, char* argv[]) {
         } else if (IsFlagOption(arg, &g_verbose, "v:erbose")) {
         } else if (IsOption(arg, NULL, "V") || IsOption(arg, NULL, "version")) {
             fprintf(stdout, "%s: v%s\n", g_program, VERSION_TEXT);
-            fprintf(stdout, "Copyright (c) Doug Rogers under the MIT License.\n");
+            print_bsd_0_clause_license_and_disclaimer(stdout, 2018, 2019, "Doug Rogers");
             exit(0);
         } else {
             PrintUsageError(2, "invalid option \"%s\"", arg);

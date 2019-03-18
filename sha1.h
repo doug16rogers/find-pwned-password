@@ -1,7 +1,5 @@
-/* Copyright (c) 2016 Doug Rogers under the terms of the MIT License. */
-/* See http://www.opensource.org/licenses/mit-license.html.. */
-/* $Id$ */
-
+/* (c) 2018 Doug Rogers under Zero Clause BSD License. See LICENSE.txt. */
+/* You are free to do whatever you want with this software. Have at it! */
 
 #ifndef __sha1_h__
 #define __sha1_h__
